@@ -1,0 +1,455 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Chat</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+
+  <!-- Below list of files have  been added for IAM authorization-->
+  <script type="text/javascript" src="assets/aws-sdk.min.js"></script>
+  <script type="text/javascript" src="assets/aws-cognito-sdk.min.js"></script>
+  <script type="text/javascript" src="assets/gateway/apigClient.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/apiGatewayCore/apiGatewayClient.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/apiGatewayCore/sigV4Client.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/apiGatewayCore/simpleHttpClient.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/apiGatewayCore/utils.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/axios/dist/axios.standalone.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/CryptoJS/rollups/hmac-sha256.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/CryptoJS/rollups/sha256.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/CryptoJS/components/enc-base64.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/CryptoJS/components/hmac.js"></script>
+  <script type="text/javascript" src="assets/gateway/lib/url-template/url-template.js"></script>
+  <!-- List of files for IAM Authorization ends here -->
+
+  <script src="https://code.jquery.com/jquery-3.3.1.min.js"> </script>
+  <script src="jwt-decode.min.js"></script>
+  <script>
+
+  function ID() {
+  // Math.random should be unique because of its seeding algorithm.
+  // Convert it to base 36 (numbers + letters), and grab the first 9 characters
+  // after the decimal.
+  return '_' + Math.random().toString(36).substr(2, 9);
+};
+
+  function getDateTime()
+  {
+    var date = new Date();
+    var dt = date.toDateString() + " " + date.toLocaleTimeString();
+    return dt
+  };
+
+
+  $(document).ready(function(){
+      var UniqueID = ID();
+	  var messages = [];
+      var lastUserMessage = "";
+      var botMessage = "";
+      var botName = 'chatbot';
+
+      var AWSconfig = {
+        "accessKey":"",
+        "secretKey":"",
+        "S3Bucket":"",
+        "region":"",
+        "sessionToken":"",
+        "client_id" :"",
+        "user_pool_id" : "",
+        "cognito_domain_url":"",
+        "redirect_uri" : "",
+        "identity_pool_id":""
+      };
+
+      let apigClient = {};
+
+      var getParameterByName = function(name, url) {
+        if (!url) url = window.location.href;
+        name = name.replace(/[\[\]]/g, "\\$&");
+        var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"),
+          results = regex.exec(url);
+        if (!results) return null;
+        if (!results[2]) return '';
+        return decodeURIComponent(results[2].replace(/\+/g, " "));
+      };
+
+      console.log("Code = "+getParameterByName("code"));
+
+      var exchangeAuthCodeForCredentials = function({auth_code = getParameterByName("code"),
+                              client_id = AWSconfig.client_id,
+                              identity_pool_id = AWSconfig.identity_pool_id,
+                              aws_region =AWSconfig.region,
+                              user_pool_id = AWSconfig.user_pool_id,
+                              cognito_domain_url= AWSconfig.cognito_domain_url,
+                              redirect_uri = AWSconfig.redirect_uri}) {
+        return new Promise((resolve, reject) => {
+          var settings = {
+            url: `${cognito_domain_url}/oauth2/token`,
+            //url : 'https://main.auth.us-east-1.amazoncognito.com/oauth2/token',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Authorization' : ''
+            },
+            data: {
+              grant_type: 'authorization_code',
+              client_id: client_id,
+              redirect_uri: redirect_uri,
+              code: auth_code
+            }
+          };
+
+          console.log("Making a call to Ouath token");
+
+            $.ajax(settings).done(function (response) {
+            console.log('OAuth2 Token Call Responded');
+            console.log('Positive Response ' + JSON.stringify(response));
+            console.log("faiyaz")
+            console.log(jwt_decode(response.id_token));
+            if (response.id_token) {
+              AWS.config.region = aws_region;
+              AWS.config.credentials = new AWS.CognitoIdentityCredentials({
+                IdentityPoolId : identity_pool_id,
+                Logins : {
+                  [`cognito-idp.${aws_region}.amazonaws.com/${user_pool_id}`]: response.id_token
+                }
+              });
+
+              console.log({IdentityPoolId : identity_pool_id,
+                Logins : {
+                  [`cognito-idp.${aws_region}.amazonaws.com/${user_pool_id}`]: response.id_token
+                }
+              });
+
+              AWS.config.credentials.refresh(function (error) {
+                console.log("Error in refresh",error);
+                if (error) {
+                  reject(error);
+                } else {
+                  console.log('Successfully Logged In');
+                  resolve(AWS.config.credentials);
+                }
+              });
+            } else {
+              console.log('Rejected with response :' + response);
+              reject(response);
+            }
+          });
+        });
+      };
+
+      exchangeAuthCodeForCredentials({auth_code: getParameterByName("code"),
+                      client_id: AWSconfig.client_id,
+                      identity_pool_id: AWSconfig.identity_pool_id,
+                      aws_region: AWSconfig.region,
+                      user_pool_id: AWSconfig.user_pool_id,
+                      cognito_domain_url: AWSconfig.cognito_domain_url,
+                      redirect_uri: AWSconfig.redirect_uri})
+      .then(function(response) {
+        console.log("Inside Then Function ",response);
+        apigClient = apigClientFactory.newClient({
+          accessKey: response.accessKeyId,
+          secretKey: response.secretAccessKey,
+          sessionToken: response.sessionToken,
+          region: "us-east-1"
+        });
+      })
+      .catch(function(error) {
+        console.log("error = "+this.error);
+        console.log("response = "+this.response);
+      });
+
+
+      function chatbotResponse(messageForBot){
+        var params = {};
+        var textarea = document.getElementById('usr');
+        var body = {
+          "messages" : messageForBot,
+          "refid" : UniqueID
+		      };
+
+        console.log('came here 3\n');
+
+        $("#usr").append(getDateTime() + " You: "+ messageForBot + "\n");
+        $('#msgId').val(function(){
+  				return this.defaultValue;
+  			});
+
+        apigClient.chatbotPost(params, body, {})
+          .then(function(result){
+            console.log("Success - Then Function");
+            console.log({result});
+            var botMessage = result.data;
+            $("#usr").append(getDateTime() + " ChatBot: "+ botMessage + "\n");
+            textarea.scrollTop = textarea.scrollHeight;
+            console.log("data = " + botMessage);
+          }).catch( function(result){
+          console.log("Inside Catch Function");
+        });
+      }
+
+      function newEntry() {
+        console.log('came here 2\n');
+        var textarea = document.getElementById('usr');
+       if (document.getElementById("msgId").value != "")
+       {
+            var messageForBot = document.getElementById("msgId").value;
+          //  $("#usr").append(getDateTime() + " ChatBot: "+ messageForBot + "\n");
+            textarea.scrollTop = textarea.scrollHeight;
+          }
+          chatbotResponse(messageForBot);
+        }
+
+      function keyPress(e) {
+        var x = e || window.event;
+        var key = (x.keyCode || x.which);
+        if (key == 13 || key == 3) {
+          newEntry();
+        }
+      }
+
+      document.onkeypress = keyPress;
+    });
+
+
+  	//function to get the current date and time according to the browser
+  /*  function runScript(e) {
+      if (e.keyCode == 13) {
+          var tb = document.getElementById("scriptBox");
+          eval(tb.value);
+          return false;
+        }
+    };
+
+
+
+ 	//function to send the message to the server and get a response back and display it in the chat window
+  //below function is being commented now as we are using the new function for the authorizing and sending the message
+
+
+	function sendMsg(e)
+	{
+    if (e.keyCode == 13){
+  	  var msg = document.getElementById("msgId").value;
+      var textarea = document.getElementById('usr');
+
+
+    	  $.ajax({
+         		url:'https://d1fnj7chd8.execute-api.us-east-1.amazonaws.com/first/chatbot',
+              	type:'POST',
+    	        crossDomain: true,
+            	contentType: 'application/json',
+              	dataType: 'json',
+              	data:JSON.stringify({"messages" : msg}),
+              	beforeSend:function(){
+                		$("#usr").append(getDateTime() + " You: "+msg + "\n");
+              	},
+              	success:function(data){
+    	          //we can call the function to again load this and refresh the list of all the images it has
+                		console.log("success\n");
+              		//$("#usr").append(data);
+                		$("#usr").append(getDateTime() + " Bot: " +data+ "\n");
+
+                    textarea.scrollTop = textarea.scrollHeight;
+    			$('#msgId').val(function(){
+    				return this.defaultValue;
+    			});
+         		},
+               	error:function(data){
+                 		alert(JSON.stringify(data));
+               	}
+       	});
+    }
+	};*/
+
+  </script>
+<style language="text/css">
+.bg,html{
+ /* The image used */
+ background-image: url("abc.jpeg");
+ height: 100%;
+
+ /* Full height */
+
+ /* Center and scale the image nicely */
+ background-position: center;
+ background-repeat: no-repeat;
+ background-size: cover;
+
+}
+</style>
+</head>
+<body class="bg">
+
+<div class="container">
+  <br />
+  <div style="background-color: #000000; margin-left: 30%; margin-right: 30%; padding-bottom: 8px; padding-left: 8px; padding-right: 8px; padding-top: 2px;border-radius: 25px;">
+  <h3 class="h3" style="text-align:center;color:white;">Assignment-3<br />Intelligent Concierge Chatbot</h3>
+  </div>
+  <p></p>
+    <div class="form-group">
+
+      <textarea style="height:400px;width:400px; margin-left: auto;margin-right: auto;position:relative;resize: none;background:#eee"readonly rows="10" class="form-control" id="usr"></textarea>
+    </div>
+    <div class="form-group">
+      <p class="h5"style="text-align:center" for="usr"><b>Message</b></p>
+    <!--  <input placeholder="Dine suggestions"type="text" style="height:30px;width:400px; margin-left: auto;margin-right: auto;"class="form-control" id="msgId" onkeypress="return sendMsg(event)">-->
+      <input placeholder="Dine suggestions"type="text" style="height:30px;width:400px; margin-left: auto;margin-right: auto;"class="form-control" id="msgId"/>
+      <br />
+  <button style="margin:auto;display: flex"id="myBtn" class="btn-danger" onclick="window.location.href='https://s3.amazonaws.com/cloudbucketsst390/logout.html'">Sign Out</button>
+
+    </div>
+</div>
+
+</body>
+</html>
+<!--
+//Code as below:
+
+
+//
+//   var getParameterByName = function(name, url) {
+//
+//       if (!url) url = window.location.href;
+//
+//      name = name.replace(/[\[\]]/g, "\\$&");
+//
+//       console.log(name);
+//
+//       var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"),
+//
+//           results = regex.exec(url);
+//
+//           console.log(results);
+//
+//       if (!results) return null;
+//
+//       if (!results[2]) return '';
+//
+//       console.log(results[2]);
+//
+//       return decodeURIComponent(results[2].replace(/\+/g, " "));
+//
+//   };
+//
+//
+//
+//   /*
+//
+//       This method exchanges the Authorization Code received from Cognito upon a successful login,
+//
+//       with temporary accessKey and secretKey IAM credentials.
+//
+//
+//
+//       Resources:
+//
+//       - https://docs.aws.amazon.com/cognito/latest/developerguide/token-endpoint.html
+//
+//       - https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-app-idp-settings.html
+//
+//       - https://docs.aws.amazon.com/cognito/latest/developerguide/using-amazon-cognito-user-identity-pools-javascript-examples.html
+//
+//   */
+//
+//
+//
+//   // Exchange code for id_token and credentials.
+//
+//   var exchangeAuthCodeForCredentials = function({
+//
+//       auth_code, client_id, identity_pool_id, aws_region, user_pool_id, cognito_domain_url, redirect_uri
+//
+//   }) {
+//
+//       return new Promise((resolve, reject) => {
+//
+//           var settings = {
+//
+//               url: `${cognito_domain_url}/oauth2/token`,
+//
+//               method: 'POST',
+//
+//               headers: {
+//
+//                   'Content-Type': 'application/x-www-form-urlencoded'
+//
+//               },
+//
+//               data: {
+//
+//                   grant_type: 'authorization_code',
+//
+//                   client_id:client_id,
+//
+//                   redirect_uri: redirect_uri,
+//
+//                   code: auth_code
+//
+//               }
+//
+//           };
+//
+//
+//
+//           $.ajax(settings).done(function (response) {
+//
+//               console.log('oauth2 token call responded');
+//
+//
+//
+//               if (response.id_token) {
+//
+//                   // Add the User's Id Token to the Cognito credentials login map.
+//
+//                   AWS.config.credentials = new AWS.CognitoIdentityCredentials({
+//
+//                       IdentityPoolId : identity_pool_id,
+//
+//                       Logins : {
+//
+//                           [`cognito-idp.${aws_region}.amazonaws.com/${user_pool_id}`]: response.id_token
+//
+//                       }
+//
+//                   });
+//
+//
+//
+//                   AWS.config.credentials.refresh((error) => {
+//
+//                       if (error) {
+//
+//                           reject(error);
+//
+//                       } else {
+//
+//                           console.log('successfully logged in');
+//
+//                           resolve(AWS.config.credentials);
+//
+//                       }
+//
+//                   });
+//
+//               } else {
+//
+//                   reject(response);
+//
+//               }
+//
+//           });
+//
+//       });
+//
+//   };
+//
+//
+//
+//   $(document).ready(function(){
+// var value = getParameterByName('code','https');
+// exchangeAuthCodeForCredentials({value,'',,'us-west-2','','',''});
+//
+//    }
